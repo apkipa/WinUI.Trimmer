@@ -12,6 +12,7 @@ import requests
 from tqdm import tqdm
 import urllib.request
 import zipfile
+import time
 
 try:
     # https://docs.github.com/en/actions/learn-github-actions/variables
@@ -184,7 +185,11 @@ def trim_resources_pri():
     os.remove("priconfig.xml")
 
 with zipfile.ZipFile("input_mux.nupkg", 'r') as zip_ref:
-    zip_ref.extractall(".")
+    for info in zip_ref.infolist():
+        extracted_path = zip_ref.extract(info, ".")
+        date_time = info.date_time
+        date_time = time.mktime(date_time + (0, 0, -1))
+        os.utime(extracted_path, (date_time, date_time))
 
 # 修剪资源
 print("正在修剪资源...")
@@ -195,20 +200,24 @@ for root, dirs, files in os.walk("."):
             print(f"修剪 {os.path.join(root, file)}", flush=True)
             os.chdir(root)
             os.rename("Microsoft.UI.Xaml.pri", "resources.pri")
+            fileTime = os.stat("resources.pri").st_mtime
             trim_resources_pri()
+            os.utime("resources.pri", (fileTime, fileTime))
             os.rename("resources.pri", "Microsoft.UI.Xaml.pri")
             os.chdir(rootDir)
 
 print("已修剪 resources.pri", flush=True)
 
-# Modify version tag
+# Modify version tag (without changing modified time)
 nuspecContent = ""
+nuspecTime = os.stat("Microsoft.UI.Xaml.nuspec").st_mtime
 with open("Microsoft.UI.Xaml.nuspec", "r", encoding="utf-8") as f:
     nuspecContent = f.read()
 nuspecContent = nuspecContent.replace(f"<version>{nugetVersionToDownload}</version>",
                                       f"<version>{nugetVersionToDownload}.trim</version>")
 with open("Microsoft.UI.Xaml.nuspec", "w", encoding="utf-8") as f:
     f.write(nuspecContent)
+os.utime("Microsoft.UI.Xaml.nuspec", (nuspecTime, nuspecTime))
 
 # os.remove("input_mux.nupkg")
 
@@ -221,6 +230,16 @@ with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 continue
             file_path = os.path.join(root, file)
             arcname = os.path.relpath(file_path, ".")
-            zipf.write(file_path, arcname)
+            
+            # 获取文件原始时间戳
+            file_info = zipfile.ZipInfo(arcname)
+            file_stat = os.stat(file_path)
+            # 将文件的mtime转换为zip需要的格式 (年, 月, 日, 时, 分, 秒)
+            date_time = time.localtime(file_stat.st_mtime)
+            file_info.date_time = date_time
+            
+            # 写入文件并保留压缩方式
+            with open(file_path, 'rb') as f:
+                zipf.writestr(file_info, f.read(), zipfile.ZIP_DEFLATED)
 
 print(f"已生成精简版 NuGet 包: {output_file}", flush=True)
